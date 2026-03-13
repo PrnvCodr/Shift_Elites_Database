@@ -10,11 +10,9 @@ let bufferPoolMisses = 0;
 async function getDb() {
   if (db) return db;
 
-  // Fetch WASM buffer directly since sql.js in Node tries to use fs.readFile for URLs
-  const response = await fetch('https://cdn.jsdelivr.net/npm/sql.js@1.12.0/dist/sql-wasm.wasm');
-  const buffer = await response.arrayBuffer();
+  // Load WASM from CDN — avoids filesystem path issues in serverless
   const SQL = await initSqlJs({
-    wasmBinary: Buffer.from(buffer),
+    locateFile: (file) => `https://cdn.jsdelivr.net/npm/sql.js@1.12.0/dist/${file}`,
   });
   db = new SQL.Database();
 
@@ -241,7 +239,30 @@ module.exports = async function handler(req, res) {
       });
     }
 
-    // Schema
+    // Schema for a specific table (must be checked BEFORE /schema)
+    const schemaTableMatch = url.match(/^\/schema\/(\w+)/);
+    if (schemaTableMatch) {
+      const tName = schemaTableMatch[1];
+      const { rows: cols } = runSelect(database, `PRAGMA table_info(${tName})`);
+      if (cols.length === 0) {
+        return res.status(404).json({ error: `Table '${tName}' not found` });
+      }
+      const { rows: idxs } = runSelect(database, `PRAGMA index_list(${tName})`);
+      const { rows: countRow } = runSelect(database, `SELECT COUNT(*) FROM ${tName}`);
+      const indexDetails = idxs.map(idx => {
+        const { rows: idxInfo } = runSelect(database, `PRAGMA index_info(${idx[1]})`);
+        return { name: idx[1], columns: idxInfo.map(i => i[2]), unique: idx[2] === 1 };
+      });
+      return res.json({
+        name: tName,
+        columns: cols.map(c => ({ name: c[1], type: c[2] || 'TEXT', nullable: c[3] === 0, primaryKey: c[5] === 1 })),
+        primaryKeys: cols.filter(c => c[5]).map(c => c[1]),
+        indexes: indexDetails,
+        rowCount: countRow[0]?.[0] || 0,
+      });
+    }
+
+    // Schema (all tables)
     if (url === '/schema') {
       const { rows: tableRows } = runSelect(database, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name");
       const tables = tableRows.map(t => {
@@ -307,6 +328,22 @@ module.exports = async function handler(req, res) {
         columns.forEach((c, i) => { obj[c] = r[i]; });
         return obj;
       }));
+    }
+
+    // Import
+    if (url === '/import' && req.method === 'POST') {
+      const { table, data } = req.body || {};
+      if (!table || !data || !Array.isArray(data)) {
+        return res.status(400).json({ error: 'Invalid import data' });
+      }
+      let inserted = 0;
+      for (const row of data) {
+        const keys = Object.keys(row);
+        const placeholders = keys.map(() => '?').join(', ');
+        database.run(`INSERT INTO ${table} (${keys.join(', ')}) VALUES (${placeholders})`, Object.values(row));
+        inserted++;
+      }
+      return res.json({ success: true, message: `${inserted} row(s) imported into ${table}` });
     }
 
     return res.status(404).json({ error: 'Not found' });
