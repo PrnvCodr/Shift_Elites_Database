@@ -10,9 +10,11 @@ let bufferPoolMisses = 0;
 async function getDb() {
   if (db) return db;
 
-  // Load WASM from CDN — avoids filesystem path issues in serverless
+  // Fetch WASM buffer directly since sql.js in Node tries to use fs.readFile for URLs
+  const response = await fetch('https://cdn.jsdelivr.net/npm/sql.js@1.12.0/dist/sql-wasm.wasm');
+  const buffer = await response.arrayBuffer();
   const SQL = await initSqlJs({
-    locateFile: (file) => `https://cdn.jsdelivr.net/npm/sql.js@1.12.0/dist/${file}`,
+    wasmBinary: Buffer.from(buffer),
   });
   db = new SQL.Database();
 
