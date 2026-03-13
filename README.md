@@ -1,4 +1,4 @@
-# 🚀 Shift_Elite DB — A Modern Database Management System
+#  Shift_Elite DB — A Modern Database Management System
 
 <div align="center">
 
@@ -13,7 +13,7 @@
 
 ---
 
-## ✨ Features
+##  Features
 
 ### 🔧 C++ Backend — Custom SQL Engine
 - **Page-based Storage Engine** — Slotted-page format with buffer pool (LRU eviction)
@@ -44,7 +44,7 @@
 
 ---
 
-## 🏗️ Architecture
+##  Architecture
 
 ```
 DBMS_Project/
@@ -89,7 +89,7 @@ DBMS_Project/
 
 ---
 
-## 🚀 Getting Started
+##  Getting Started
 
 ### Prerequisites
 - **Node.js** 18+
@@ -147,7 +147,7 @@ DESCRIBE customers;
 
 ---
 
-## 🔌 REST API Endpoints
+##  REST API Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -163,7 +163,7 @@ DESCRIBE customers;
 
 ---
 
-## ⌨️ Keyboard Shortcuts
+##  Keyboard Shortcuts
 
 | Shortcut | Action |
 |----------|--------|
@@ -179,7 +179,7 @@ DESCRIBE customers;
 
 ---
 
-## 🛠️ Technology Stack
+##  Technology Stack
 
 | Component | Technology |
 |-----------|-----------|
