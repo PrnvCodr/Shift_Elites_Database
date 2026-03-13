@@ -147,7 +147,9 @@ module.exports = async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   const database = await getDb();
-  const url = req.url.replace(/^\/api/, '');
+  // Vercel rewrites pass path as query param; fallback to req.url for local dev
+  const pathParam = req.query?.path || '';
+  const url = '/' + pathParam.replace(/^\//, '');
 
   try {
     // Health
