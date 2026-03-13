@@ -1,8 +1,6 @@
 // Vercel Serverless API — Shift_Elite DB
-// Uses sql.js (WASM) for SQLite that works in serverless environments
-const initSqlJs = require('sql.js');
-const path = require('path');
-const fs = require('fs');
+// Uses sql.js (asm.js build — pure JavaScript, NO WASM binary needed)
+const initSqlJs = require('sql.js/dist/sql-asm.js');
 
 let db = null;
 let queryHistory = [];
@@ -12,17 +10,10 @@ let bufferPoolMisses = 0;
 async function getDb() {
   if (db) return db;
 
-  // Load WASM — try from node_modules first, fallback to CDN
-  let sqlConfig = {};
-  try {
-    const sqlJsDir = path.dirname(require.resolve('sql.js/package.json'));
-    const wasmPath = path.join(sqlJsDir, 'dist', 'sql-wasm.wasm');
-    sqlConfig.wasmBinary = fs.readFileSync(wasmPath);
-  } catch (_e) {
-    sqlConfig.locateFile = (file) => `https://cdn.jsdelivr.net/npm/sql.js@1.12.0/dist/${file}`;
-  }
-  const SQL = await initSqlJs(sqlConfig);
+  // Pure JS build — no WASM file to locate, works everywhere
+  const SQL = await initSqlJs();
   db = new SQL.Database();
+
 
   // Seed sample data (db.exec handles multiple statements; db.run does NOT)
   db.exec(`
