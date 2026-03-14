@@ -1,4 +1,6 @@
-const API_BASE = '/api';
+// In production (Vercel), VITE_API_URL points to the Railway C++ backend.
+// In local dev, it's absent and Vite's proxy forwards /api → localhost:8080.
+const API_BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? '/api';
 
 export interface Column {
   name: string;

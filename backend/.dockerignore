@@ -1,0 +1,6 @@
+build/
+*.md
+.git
+.gitignore
+*.txt.bak
+Shift_Elite DB_data/
