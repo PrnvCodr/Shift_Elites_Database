@@ -28,25 +28,27 @@ RUN cmake -B build \
 # ─────────────────────────────────────────────────────────────────────────────
 FROM debian:bookworm-slim AS runtime
 
-# Runtime C++ standard libraries
+# Runtime C++ standard libraries + wget for healthcheck
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libstdc++6 \
     ca-certificates \
+    wget \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the compiled binary from the builder stage
 COPY --from=builder /build/build/shift_elite_server /usr/local/bin/shift_elite_server
 
-# Railway injects the PORT env variable; fall back to 8080 for local Docker use
-ENV PORT=8080
+# Render injects PORT at runtime. Default 10000 matches Render's free tier.
+ENV PORT=10000
 
 # Data directory for disk-based storage
 RUN mkdir -p /data
 
-EXPOSE ${PORT}
+# Static port number — EXPOSE doesn't expand env vars
+EXPOSE 10000
 
 # Health check — uses the /api/health endpoint the C++ server already exposes
-HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
   CMD wget -qO- http://localhost:${PORT}/api/health || exit 1
 
 ENTRYPOINT ["/bin/sh", "-c", "exec /usr/local/bin/shift_elite_server --port ${PORT} --data /data"]
