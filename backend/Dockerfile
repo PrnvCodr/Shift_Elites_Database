@@ -28,12 +28,17 @@ RUN cmake -B build \
 # ─────────────────────────────────────────────────────────────────────────────
 FROM debian:bookworm-slim AS runtime
 
-# Runtime C++ standard libraries + wget for healthcheck
+# Runtime dependencies + wget for healthcheck
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libstdc++6 \
     ca-certificates \
     wget \
     && rm -rf /var/lib/apt/lists/*
+
+# Copy the GCC 13 libstdc++ from the builder stage.
+# debian:bookworm-slim only ships GLIBCXX up to 3.4.30, but GCC 13 requires
+# 3.4.31 and 3.4.32. Copying directly from the builder avoids the mismatch.
+COPY --from=builder /usr/local/lib64/libstdc++.so.6 /usr/local/lib/libstdc++.so.6
+RUN ldconfig
 
 # Copy the compiled binary from the builder stage
 COPY --from=builder /build/build/shift_elite_server /usr/local/bin/shift_elite_server
