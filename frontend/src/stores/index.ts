@@ -60,28 +60,40 @@ export const useQueryStore = create<QueryStore>((set, get) => ({
 
   executeQuery: async (id) => {
     const tab = get().tabs.find((t) => t.id === id);
-    if (!tab || !tab.sql.trim()) return;
+    // Guard: don't run if empty or already running (prevents double-fire)
+    if (!tab || !tab.sql.trim() || tab.isExecuting) return;
 
+    // Mark as executing
     set((state) => ({
-      tabs: state.tabs.map((t) => (t.id === id ? { ...t, isExecuting: true } : t)),
+      tabs: state.tabs.map((t) => (t.id === id ? { ...t, isExecuting: true, result: null } : t)),
     }));
 
+    let result: QueryResult;
     try {
-      const result = await api.executeQuery(tab.sql);
-      set((state) => ({
-        tabs: state.tabs.map((t) => (t.id === id ? { ...t, result, isExecuting: false } : t)),
-      }));
-      // Refresh schema after DDL
+      result = await api.executeQuery(tab.sql);
+    } catch (err: any) {
+      // Always guarantee isExecuting is reset — even on network errors / timeouts
+      result = {
+        success: false,
+        message: err.message || 'Unknown network error. Is the backend server running?',
+        rowsAffected: 0,
+        executionTimeMs: 0,
+      };
+    }
+
+    // Always reset isExecuting and store result
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === id ? { ...t, result, isExecuting: false } : t
+      ),
+    }));
+
+    // Refresh schema after DDL so sidebar stays in sync
+    if (result.success) {
       const upperSql = tab.sql.trim().toUpperCase();
       if (upperSql.startsWith('CREATE') || upperSql.startsWith('DROP') || upperSql.startsWith('ALTER')) {
         useSchemaStore.getState().fetchSchema();
       }
-    } catch (err: any) {
-      set((state) => ({
-        tabs: state.tabs.map((t) =>
-          t.id === id ? { ...t, result: { success: false, message: err.message || 'Network error', rowsAffected: 0, executionTimeMs: 0 }, isExecuting: false } : t
-        ),
-      }));
     }
   },
 

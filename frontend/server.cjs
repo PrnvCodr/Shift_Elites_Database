@@ -446,8 +446,24 @@ app.get('/api/health', (req, res) => {
 // ==================== START SERVER ====================
 seedDatabase();
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`\n🚀 Shift_Elite DB Server running at http://localhost:${PORT}`);
   console.log(`   API: http://localhost:${PORT}/api/health`);
   console.log(`   Tables: customers, products, orders, employees\n`);
+});
+
+// Prevent connections from hanging open indefinitely — this is a major
+// cause of the frontend "stuck" Execute button (server holds a connection
+// open but never sends a response).
+server.keepAliveTimeout = 30_000;   // 30s keep-alive
+server.headersTimeout   = 35_000;   // must be > keepAliveTimeout
+
+// Catch any unhandled promise rejections so the process doesn't silently
+// freeze or crash without logging.
+process.on('unhandledRejection', (reason) => {
+  console.error('⚠️  Unhandled Promise Rejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('💥  Uncaught Exception:', err.message);
+  // Keep the server alive — don't exit for non-fatal errors
 });

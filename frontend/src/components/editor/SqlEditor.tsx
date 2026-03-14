@@ -4,6 +4,10 @@ import { useQueryStore, useSchemaStore } from '../../stores';
 import { Play, Plus, X, Loader2, Clock, CheckCircle2, XCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
+// Track registered completion provider globally so we only ever register once,
+// preventing the memory/CPU leak that caused sluggish / stuck executions.
+let sqlCompletionDisposable: { dispose: () => void } | null = null;
+
 export function SqlEditor() {
   const { tabs, activeTabId, addTab, closeTab, setActiveTab, updateSql, executeQuery } = useQueryStore();
   const { tables } = useSchemaStore();
@@ -13,8 +17,17 @@ export function SqlEditor() {
   const handleEditorMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
 
-    // Register SQL completions from schema
-    monaco.languages.registerCompletionItemProvider('sql', {
+    // Dispose any previous provider before registering a new one.
+    // Without this, every time the editor remounts (tab switch, view change etc.)
+    // a NEW provider is added on top of the old ones — eventually Monaco's
+    // suggestion loop blocks the JS thread and Execute appears to hang.
+    if (sqlCompletionDisposable) {
+      sqlCompletionDisposable.dispose();
+      sqlCompletionDisposable = null;
+    }
+
+    // Register SQL completions from schema (only once at a time)
+    sqlCompletionDisposable = monaco.languages.registerCompletionItemProvider('sql', {
       provideCompletionItems: (model: any, position: any) => {
         const word = model.getWordUntilPosition(position);
         const range = {
@@ -25,7 +38,7 @@ export function SqlEditor() {
         };
 
         const suggestions: any[] = [];
-        
+
         // SQL keywords
         const keywords = [
           'SELECT', 'FROM', 'WHERE', 'INSERT', 'INTO', 'VALUES', 'UPDATE', 'SET',
@@ -47,8 +60,10 @@ export function SqlEditor() {
           });
         });
 
-        // Table names
-        tables.forEach(table => {
+        // Table and column names from current schema
+        // Read from store directly so we always get fresh data
+        const currentTables = useSchemaStore.getState().tables;
+        currentTables.forEach(table => {
           suggestions.push({
             label: table.name,
             kind: monaco.languages.CompletionItemKind.Class,
@@ -56,7 +71,6 @@ export function SqlEditor() {
             detail: `Table (${table.columns?.length || 0} columns)`,
             range,
           });
-          // Column names
           table.columns?.forEach(col => {
             suggestions.push({
               label: `${table.name}.${col.name}`,
@@ -99,20 +113,31 @@ export function SqlEditor() {
       },
     });
 
-    // Ctrl+Enter to execute
+    // Ctrl+Enter to execute — reads from store at call-time so it's never stale
     editor.addAction({
       id: 'execute-query',
       label: 'Execute Query',
       keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter],
       run: () => {
         const store = useQueryStore.getState();
-        store.executeQuery(store.activeTabId);
+        const tabId = store.activeTabId;
+        if (tabId) store.executeQuery(tabId);
       },
     });
   };
 
+  // Cleanup provider when component fully unmounts (e.g. navigating away)
+  useEffect(() => {
+    return () => {
+      if (sqlCompletionDisposable) {
+        sqlCompletionDisposable.dispose();
+        sqlCompletionDisposable = null;
+      }
+    };
+  }, []);
+
   const handleExecute = useCallback(() => {
-    if (activeTab) executeQuery(activeTab.id);
+    if (activeTab && !activeTab.isExecuting) executeQuery(activeTab.id);
   }, [activeTab, executeQuery]);
 
   return (

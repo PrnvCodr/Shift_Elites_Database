@@ -2,6 +2,9 @@
 // In local dev, it's absent and Vite's proxy forwards /api → localhost:8080.
 const API_BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? '/api';
 
+// Timeout in ms for all API requests — prevents Execute from getting stuck forever
+const FETCH_TIMEOUT_MS = 10_000;
+
 export interface Column {
   name: string;
   type: string;
@@ -47,13 +50,29 @@ export interface Stats {
   queryHistory: { total: number; slowQueries: number };
 }
 
+/**
+ * Fetch with an automatic AbortController timeout.
+ * If the server doesn't respond within FETCH_TIMEOUT_MS, the request is
+ * cancelled and a clear "timed out" error is thrown so Execute never
+ * stays stuck spinning indefinitely.
+ */
 async function safeFetch(url: string, options?: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timerId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
   try {
-    const res = await fetch(url, options);
+    const res = await fetch(url, { ...options, signal: controller.signal });
+    clearTimeout(timerId);
     return res;
   } catch (err: any) {
+    clearTimeout(timerId);
+    if (err.name === 'AbortError') {
+      throw new Error(
+        `Request timed out after ${FETCH_TIMEOUT_MS / 1000}s. Make sure the backend server (npm run server) is running on port 8080.`
+      );
+    }
     throw new Error(
-      `Cannot connect to the backend server. Make sure the C++ server is running on port 8080.\n\nError: ${err.message}`
+      `Cannot connect to the backend server. Make sure it is running on port 8080.\n\nError: ${err.message}`
     );
   }
 }
