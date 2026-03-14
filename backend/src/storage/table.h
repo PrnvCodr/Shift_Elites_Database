@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <cstring>
+#include <functional>
 #include "../types/types.h"
 #include "page.h"
 #include "disk_manager.h"
