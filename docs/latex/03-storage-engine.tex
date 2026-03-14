@@ -1,0 +1,224 @@
+% ============================================================
+%  Chapter 3 --- Storage Engine
+% ============================================================
+\chapter{Storage Engine}
+\label{ch:storage-engine}
+
+\section{Why a Custom Storage Engine?}
+
+Every DBMS must answer a fundamental question: \emph{how do we organise bytes on disk so that queries are fast?}  Commercial systems like PostgreSQL use a \emph{heap file} of fixed-size pages; SQLite uses a B-tree-based file format.  \shiftdb{} implements a \textbf{slotted-page heap file}, which is the most common design taught in database courses~\cite{ramakrishnan2003database} and used in production systems.
+
+\section{Page Structure}
+\label{sec:page-structure}
+
+Each page is exactly \textbf{4\,096 bytes} (\code{PAGE\_SIZE}).  The internal layout follows the \emph{slotted-page} design:
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+  % Page outline
+  \draw[thick, fill=shiftBg] (0,0) rectangle (10,6);
+
+  % Header
+  \fill[shiftPrimary!20] (0,5.2) rectangle (10,6);
+  \node[font=\small\bfseries] at (5,5.6) {Page Header (32 bytes)};
+
+  % Slot directory
+  \fill[shiftAccent!15] (0,4.0) rectangle (10,5.2);
+  \node[font=\small\bfseries] at (5,4.9) {Slot Directory};
+  \node[font=\scriptsize] at (2.5,4.35) {Slot 0: [off, len, occ]};
+  \node[font=\scriptsize] at (7.5,4.35) {Slot 1: [off, len, occ]};
+
+  % Free space
+  \fill[white] (0,1.8) rectangle (10,4.0);
+  \node[font=\small\itshape, color=gray] at (5,2.9) {Free Space};
+
+  % Tuple data
+  \fill[shiftWarn!10] (0,0) rectangle (10,1.8);
+  \node[font=\small\bfseries] at (5,1.3) {Tuple Data (grows $\leftarrow$)};
+  \node[font=\scriptsize] at (7.5,0.5) {Tuple 1};
+  \node[font=\scriptsize] at (2.5,0.5) {Tuple 0};
+
+  % Arrows showing growth directions
+  \draw[-Stealth, thick, shiftPrimary] (3,5.15) -- (3,4.05)
+    node[midway, right, font=\scriptsize] {grows $\downarrow$};
+  \draw[-Stealth, thick, shiftWarn] (7,1.85) -- (7,3.95)
+    node[midway, right, font=\scriptsize] {grows $\uparrow$};
+\end{tikzpicture}
+\caption{Slotted-page layout.  The slot directory grows downward from the header; tuple data grows upward from the bottom.}
+\label{fig:slotted-page}
+\end{figure}
+
+\subsection{Page Header}
+
+The header occupies the first 32 bytes and is defined by the \code{PageHeader} struct:
+
+\begin{table}[H]
+\centering
+\caption{Page header fields.}
+\label{tab:page-header}
+\begin{tabular}{l l p{8cm}}
+\toprule
+\textbf{Field} & \textbf{Type / Size} & \textbf{Description} \\
+\midrule
+\code{pageId}           & \code{uint32\_t} (4\,B)  & Unique page identifier \\
+\code{numSlots}         & \code{uint32\_t} (4\,B)  & Number of slot entries in the directory \\
+\code{freeSpaceOffset}  & \code{uint32\_t} (4\,B)  & Byte offset to start of free space (end of slot dir) \\
+\code{tupleDataOffset}  & \code{uint32\_t} (4\,B)  & Byte offset to start of tuple data region \\
+\code{nextPageId}       & \code{uint32\_t} (4\,B)  & Pointer for linked-list / overflow pages \\
+\code{prevPageId}       & \code{uint32\_t} (4\,B)  & Previous page pointer \\
+\code{flags}            & \code{uint32\_t} (4\,B)  & Page-type flags (reserved) \\
+\code{reserved}         & \code{uint32\_t} (4\,B)  & Future use \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Slot Directory}
+
+Each slot is a \code{SlotEntry} struct (12 bytes: 4-byte offset, 4-byte length, 1-byte occupied flag, 3-byte padding).  The directory grows \emph{forward} from the header.
+
+\subsection{Free Space Calculation}
+
+\begin{lstlisting}[style=cpp, caption={Free-space calculation in \code{Page::getFreeSpace()}.}]
+size_t getFreeSpace() const {
+    auto* header = getHeader();
+    size_t slotsDirEnd = sizeof(PageHeader)
+                       + header->numSlots * sizeof(SlotEntry);
+    if (header->tupleDataOffset <= slotsDirEnd) return 0;
+    return header->tupleDataOffset - slotsDirEnd
+         - sizeof(SlotEntry);  // reserve space for new slot
+}
+\end{lstlisting}
+
+The available space is the gap between the end of the slot directory and the start of the tuple data, minus one \code{SlotEntry} for the new slot that will be added on the next insert.
+
+\section{Tuple Insertion}
+\label{sec:tuple-insert}
+
+\begin{algorithm}[H]
+\caption{Insert a tuple into a page.}
+\label{alg:insert-tuple}
+\KwInput{Tuple data $t$, tuple length $|t|$}
+\KwOutput{Slot number, or $-1$ if page is full}
+\If{$\text{getFreeSpace}() < |t| + |\text{SlotEntry}|$}{
+  \Return{$-1$}\;
+}
+$s \leftarrow$ find first free slot (reuse deleted) or allocate new\;
+$\text{tupleDataOffset} \leftarrow \text{tupleDataOffset} - |t|$\;
+Copy $t$ to page data at \text{tupleDataOffset}\;
+Set slot $s$: offset $\leftarrow$ tupleDataOffset, length $\leftarrow |t|$, occupied $\leftarrow$ true\;
+\Return{$s$}\;
+\end{algorithm}
+
+\textbf{Key design point:} deleted tuples leave their slot marked as \code{occupied = false}, but their space is \emph{not} reclaimed until a compaction pass.  This is the classically lazy approach --- simple but wastes space until the page is reorganised.
+
+\section{Tuple Serialisation}
+\label{sec:serialisation}
+
+Rows are serialised to a byte sequence by \code{Table::serializeRow}:
+
+\begin{enumerate}[nosep]
+  \item \textbf{Null bitmap} --- $\lceil n/8 \rceil$ bytes, one bit per column.  A set bit means ``this column is NULL.''
+  \item \textbf{Fixed-length fields} --- \code{INT} (4\,B), \code{FLOAT} (4\,B), \code{BOOLEAN} (1\,B).
+  \item \textbf{Variable-length fields} --- \code{VARCHAR}, \code{DATE}, \code{TIMESTAMP}: a 2-byte length prefix followed by raw character data.
+\end{enumerate}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+  \draw[thick] (0,0) rectangle (12,1.2);
+  % Null bitmap
+  \fill[shiftPrimary!15] (0,0) rectangle (1.5,1.2);
+  \node[font=\scriptsize\bfseries, align=center] at (0.75,0.6) {Null\\Bitmap};
+  % INT
+  \fill[shiftAccent!15] (1.5,0) rectangle (3.5,1.2);
+  \node[font=\scriptsize, align=center] at (2.5,0.6) {INT\\(4 B)};
+  % FLOAT
+  \fill[shiftPrimary!10] (3.5,0) rectangle (5.5,1.2);
+  \node[font=\scriptsize, align=center] at (4.5,0.6) {FLOAT\\(4 B)};
+  % BOOL
+  \fill[shiftAccent!10] (5.5,0) rectangle (6.5,1.2);
+  \node[font=\scriptsize, align=center] at (6.0,0.6) {BOOL\\(1 B)};
+  % VARCHAR len
+  \fill[shiftWarn!10] (6.5,0) rectangle (8.0,1.2);
+  \node[font=\scriptsize, align=center] at (7.25,0.6) {Len\\(2 B)};
+  % VARCHAR data
+  \fill[shiftWarn!20] (8.0,0) rectangle (12,1.2);
+  \node[font=\scriptsize, align=center] at (10,0.6) {VARCHAR data\\(variable)};
+\end{tikzpicture}
+\caption{Binary layout of a serialised row.}
+\label{fig:row-format}
+\end{figure}
+
+\section{Disk Manager}
+\label{sec:disk-manager}
+
+\code{DiskManager} handles all file I/O.  Each table has its own \code{.nxdb} file --- a flat sequence of 4\,KB pages.
+
+\begin{table}[H]
+\centering
+\caption{Key \code{DiskManager} operations.}
+\begin{tabular}{l p{12cm}}
+\toprule
+\textbf{Method} & \textbf{Behaviour} \\
+\midrule
+\code{readPage}        & Seeks to \code{pageId $\times$ PAGE\_SIZE} and reads 4\,KB into a \code{Page}. \\
+\code{writePage}       & Seeks to the same offset and writes 4\,KB, then flushes. \\
+\code{allocatePage}    & Appends an empty page at the end of the file; returns new page ID. \\
+\code{getNumPages}     & Returns file size / \code{PAGE\_SIZE}. \\
+\code{createTableFile} & Creates an empty \code{.nxdb} file. \\
+\code{deleteTableFile} & Closes the \code{fstream} handle and deletes the file. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The Disk Manager maintains a \code{std::unordered\_map<string, fstream>} of open file handles, opened on first access and closed on destruction.  All operations are protected by a \code{std::mutex} for thread safety.
+
+\section{Table Operations}
+\label{sec:table-operations}
+
+The \code{Table} class sits on top of the Disk Manager and Buffer Pool and provides row-level operations:
+
+\begin{itemize}[nosep]
+  \item \code{insertRow} --- serialises the row, tries each existing page; if all are full, allocates a new page.
+  \item \code{scanAll} --- iterates every slot of every page, deserialising occupied tuples.
+  \item \code{deleteRows} --- takes a predicate lambda; marks matching slots as unoccupied.
+  \item \code{updateRows} --- a delete-then-reinsert strategy: matching rows are deleted and new versions inserted.
+\end{itemize}
+
+\begin{warningbox}[Design Trade-off: Delete-Then-Reinsert Updates]
+The update strategy of deleting and reinserting avoids in-place modification of variable-length tuples (which could overflow the slot).  However, it increases write amplification and may fragment pages.  Production databases use \emph{HOT updates} (PostgreSQL) or \emph{delta stores} to mitigate this.
+\end{warningbox}
+
+\section{File Organisation Comparison}
+
+\begin{table}[H]
+\centering
+\caption{File organisation strategies.}
+\label{tab:file-org}
+\begin{tabular}{l c c p{6cm}}
+\toprule
+\textbf{Organisation} & \textbf{Insert} & \textbf{Lookup} & \textbf{Used By} \\
+\midrule
+Heap File (unordered)        & \bigO{1}   & \bigO{n}   & \shiftdb{}, PostgreSQL \\
+Sorted File                   & \bigO{n}   & \bigO{\log n} & Classic textbook \\
+Hash File                     & \bigO{1}   & \bigO{1}   & Oracle hash clusters \\
+LSM Tree                      & \bigO{1}   & \bigO{\log n} & RocksDB, Cassandra \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\shiftdb{} uses a heap file because it is the simplest to implement and pairs naturally with a buffer pool and optional indexes.
+
+\begin{interviewbox}[Interview Corner]
+\textbf{Q:} Explain the slotted-page format and why it is preferred over fixed-offset layouts.\\[4pt]
+\textbf{A:} In a slotted-page, the slot directory stores offset/length pairs that point to tuples growing from the end of the page.  This allows \emph{variable-length records} and easy \emph{tuple movement} (for compaction) --- you only update the slot entry, not external pointers.  Fixed-offset layouts waste space for variable-length data and cannot reorganise without updating every reference.
+
+\vspace{6pt}
+\textbf{Q:} How does \shiftdb{} handle NULLs in tuple storage?\\[4pt]
+\textbf{A:} A null bitmap at the start of each serialised row uses one bit per column.  If the bit is set, the field is skipped entirely during serialisation, saving space.  This is the same approach PostgreSQL and MySQL use.
+
+\vspace{6pt}
+\textbf{Q:} What happens when a page is full during an INSERT?\\[4pt]
+\textbf{A:} \code{Table::insertRow} scans existing pages first; if none have enough free space, it calls \code{DiskManager::allocatePage} to append a fresh 4\,KB page to the file.
+\end{interviewbox}

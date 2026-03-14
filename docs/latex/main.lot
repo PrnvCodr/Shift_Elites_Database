@@ -1,0 +1,49 @@
+\babel@toc {english}{}\relax 
+\addvspace {10\p@ }
+\contentsline {table}{\numberline {1.1}{\ignorespaces Technology stack of \shiftdb {}.}}{2}{table.caption.4}%
+\addvspace {10\p@ }
+\contentsline {table}{\numberline {2.1}{\ignorespaces Frontend component mapping.}}{7}{table.caption.6}%
+\addvspace {10\p@ }
+\contentsline {table}{\numberline {3.1}{\ignorespaces Page header fields.}}{12}{table.caption.10}%
+\contentsline {table}{\numberline {3.2}{\ignorespaces Key \code {DiskManager} operations.}}{13}{table.caption.12}%
+\contentsline {table}{\numberline {3.3}{\ignorespaces File organisation strategies.}}{14}{table.caption.13}%
+\addvspace {10\p@ }
+\contentsline {table}{\numberline {4.1}{\ignorespaces B-tree vs B$^+$-tree comparison.}}{18}{table.caption.19}%
+\contentsline {table}{\numberline {4.2}{\ignorespaces When to use which index type.}}{18}{table.caption.20}%
+\contentsline {table}{\numberline {4.3}{\ignorespaces Asymptotic costs of index operations (order-$m$ B-tree, $N$ keys).}}{19}{table.caption.21}%
+\addvspace {10\p@ }
+\contentsline {table}{\numberline {5.1}{\ignorespaces Token type categories.}}{21}{table.caption.23}%
+\contentsline {table}{\numberline {5.2}{\ignorespaces Parser methods and their responsibilities.}}{23}{table.caption.24}%
+\contentsline {table}{\numberline {5.3}{\ignorespaces Expression types.}}{25}{table.caption.27}%
+\addvspace {10\p@ }
+\contentsline {table}{\numberline {6.1}{\ignorespaces Sample EXPLAIN result.}}{28}{table.caption.30}%
+\contentsline {table}{\numberline {6.2}{\ignorespaces Common logical optimisation rules.}}{28}{table.caption.32}%
+\contentsline {table}{\numberline {6.3}{\ignorespaces Join algorithm comparison.}}{29}{table.caption.33}%
+\contentsline {table}{\numberline {6.4}{\ignorespaces Execution models.}}{30}{table.caption.34}%
+\addvspace {10\p@ }
+\contentsline {table}{\numberline {7.1}{\ignorespaces Isolation levels and permitted anomalies.}}{34}{table.caption.35}%
+\contentsline {table}{\numberline {7.2}{\ignorespaces Lock compatibility matrix.}}{35}{table.caption.37}%
+\contentsline {table}{\numberline {7.3}{\ignorespaces Lock granularity trade-offs.}}{35}{table.caption.38}%
+\addvspace {10\p@ }
+\contentsline {table}{\numberline {8.1}{\ignorespaces MVCC storage strategies.}}{38}{table.caption.41}%
+\addvspace {10\p@ }
+\contentsline {table}{\numberline {9.1}{\ignorespaces Buffer pool operations.}}{42}{table.caption.45}%
+\contentsline {table}{\numberline {9.2}{\ignorespaces Comparison of page replacement policies.}}{43}{table.caption.46}%
+\addvspace {10\p@ }
+\contentsline {table}{\numberline {10.1}{\ignorespaces WAL log record fields.}}{45}{table.caption.47}%
+\contentsline {table}{\numberline {10.2}{\ignorespaces Checkpoint types.}}{47}{table.caption.49}%
+\contentsline {table}{\numberline {10.3}{\ignorespaces Buffer management policy matrix.}}{47}{table.caption.50}%
+\addvspace {10\p@ }
+\contentsline {table}{\numberline {11.1}{\ignorespaces Complete REST API reference.}}{49}{table.caption.52}%
+\contentsline {table}{\numberline {11.2}{\ignorespaces Zustand store slices.}}{51}{table.caption.53}%
+\addvspace {10\p@ }
+\contentsline {table}{\numberline {12.1}{\ignorespaces Benchmark environment.}}{53}{table.caption.55}%
+\contentsline {table}{\numberline {12.2}{\ignorespaces Point query latency (microseconds): \code {SELECT * FROM customers WHERE id = ?}}}{53}{table.caption.56}%
+\contentsline {table}{\numberline {12.3}{\ignorespaces Full scan latency: \code {SELECT * FROM customers}}}{54}{table.caption.57}%
+\contentsline {table}{\numberline {12.4}{\ignorespaces Aggregate query latency: \code {SELECT category, COUNT(*), AVG(price) FROM products GROUP BY category}}}{54}{table.caption.58}%
+\contentsline {table}{\numberline {12.5}{\ignorespaces INNER JOIN latency: \code {SELECT ... FROM orders INNER JOIN customers ON ...}}}{54}{table.caption.59}%
+\contentsline {table}{\numberline {12.6}{\ignorespaces Buffer pool hit rate under different workloads.}}{55}{table.caption.60}%
+\contentsline {table}{\numberline {12.7}{\ignorespaces Potential optimisations and their expected impact.}}{55}{table.caption.61}%
+\contentsline {table}{\numberline {12.8}{\ignorespaces INSERT throughput (rows per second).}}{55}{table.caption.62}%
+\addvspace {10\p@ }
+\addvspace {10\p@ }

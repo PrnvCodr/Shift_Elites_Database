@@ -1,0 +1,162 @@
+% ============================================================
+%  Chapter 8 --- Multi-Version Concurrency Control (MVCC)
+% ============================================================
+\chapter{Multi-Version Concurrency Control}
+\label{ch:mvcc}
+
+\section{Motivation}
+
+Traditional lock-based concurrency (2PL) forces readers to wait for writers and vice versa.  \emph{Multi-Version Concurrency Control} (MVCC)~\cite{reed1978naming} eliminates this contention by keeping multiple versions of each row.  Readers see a consistent \emph{snapshot} of the database without blocking writers.
+
+\begin{conceptbox}[Core Idea]
+Instead of updating a row in place, MVCC creates a \emph{new version} of the row.  Each version carries metadata (creation timestamp, deletion timestamp) that tells the system which transactions can see it.  Readers never block because they always have a valid version to read.
+\end{conceptbox}
+
+\section{Version Chain}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=1.5cm and 0.5cm]
+  \node[component, minimum width=3.5cm] (v3) {Version 3\\balance = 800\\$t_{\text{create}}$ = 300\\$t_{\text{delete}}$ = $\infty$};
+  \node[component, minimum width=3.5cm, left=of v3, fill=gray!10] (v2)
+    {Version 2\\balance = 900\\$t_{\text{create}}$ = 200\\$t_{\text{delete}}$ = 300};
+  \node[component, minimum width=3.5cm, left=of v2, fill=gray!20] (v1)
+    {Version 1\\balance = 1000\\$t_{\text{create}}$ = 100\\$t_{\text{delete}}$ = 200};
+
+  \draw[arr] (v3) -- (v2);
+  \draw[arr] (v2) -- (v1);
+
+  \node[note, below=0.8cm of v3] (note) {Latest version\\(visible to $T$ with $t \geq 300$)};
+  \draw[dasharr] (note) -- (v3);
+\end{tikzpicture}
+\caption{Version chain for a single row.  Each version records creation and deletion timestamps.}
+\label{fig:version-chain}
+\end{figure}
+
+\section{Visibility Rules}
+
+\begin{algorithm}[H]
+\caption{MVCC Visibility Check}
+\label{alg:mvcc-visibility}
+\KwInput{Transaction timestamp $t_{\text{read}}$, version $V$ with $t_{\text{create}}$, $t_{\text{delete}}$}
+\KwOutput{\texttt{true} if $V$ is visible}
+\If{$t_{\text{create}} \leq t_{\text{read}}$ \textbf{and} $t_{\text{read}} < t_{\text{delete}}$}{
+  \Return{\texttt{true}} \tcp*{Version was alive at read time}
+}
+\Return{\texttt{false}}\;
+\end{algorithm}
+
+\section{MVCC Implementation Strategies}
+
+\begin{table}[H]
+\centering
+\caption{MVCC storage strategies.}
+\begin{tabular}{l p{9cm} l}
+\toprule
+\textbf{Strategy} & \textbf{How It Works} & \textbf{Used By} \\
+\midrule
+Append-only (O2N) & New versions appended to table; version chain from oldest to newest & MySQL/InnoDB \\
+Append-only (N2O) & Version chain from newest to oldest & PostgreSQL \\
+Delta storage     & Main table has latest version; deltas stored in a side structure & Oracle, SQL Server \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Append-Only (PostgreSQL Style)}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+  \draw[thick, fill=shiftBg] (0,0) rectangle (12,3.5);
+  \node[font=\small\bfseries] at (6,3.2) {Heap Table (same table stores all versions)};
+
+  \node[slot, minimum width=3.5cm] at (2,2.2) {Row v1 (deleted)};
+  \node[slot, minimum width=3.5cm] at (6,2.2) {Row v2 (deleted)};
+  \node[slot, minimum width=3.5cm, fill=shiftAccent!20] at (10,2.2) {Row v3 (current)};
+
+  \node[slot, minimum width=3.5cm] at (2,0.8) {Other Row v1};
+  \node[slot, minimum width=3.5cm, fill=shiftAccent!20] at (6,0.8) {Other Row v2 (current)};
+
+  \draw[arr, shiftPrimary] (4,2.2) -- (8,2.2);
+  \draw[dasharr] (3.7,0.8) -- (4.3,0.8);
+\end{tikzpicture}
+\caption{PostgreSQL-style MVCC: all versions live in the heap; dead versions are cleaned by VACUUM.}
+\label{fig:pg-mvcc}
+\end{figure}
+
+\subsection{Delta Storage (Oracle/SQL Server Style)}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=1cm]
+  \node[component, minimum width=4cm] (main) {Main Table\\(latest versions only)};
+  \node[component, minimum width=4cm, right=3cm of main, fill=shiftWarn!10, draw=shiftWarn]
+    (undo) {Undo Segment\\(old version deltas)};
+
+  \draw[arr] (main) -- (undo) node[midway, above, font=\scriptsize] {rollback pointer};
+\end{tikzpicture}
+\caption{Delta storage: the main table always has the latest version; older versions are reconstructed from undo segments.}
+\end{figure}
+
+\section{Garbage Collection}
+
+Old versions that no transaction will ever need must be cleaned up:
+
+\begin{enumerate}[nosep]
+  \item \textbf{Background vacuum} (PostgreSQL): a separate process scans tables and removes dead tuples.
+  \item \textbf{Cooperative GC}: each transaction cleans up versions it encounters that are no longer visible to any active transaction.
+  \item \textbf{Epoch-based GC}: versions older than the oldest active transaction's epoch are safe to reclaim.
+\end{enumerate}
+
+\begin{warningbox}[The VACUUM Problem]
+PostgreSQL's VACUUM is a well-known operational concern.  If autovacuum falls behind, dead tuples accumulate (``table bloat''), increasing scan times and disk usage.  Oracle avoids this with undo segments that are overwritten in a circular buffer.
+\end{warningbox}
+
+\section{Snapshot Isolation}
+
+Snapshot Isolation (SI) is a practical isolation level implemented via MVCC:
+\begin{itemize}[nosep]
+  \item Each transaction sees a \emph{consistent snapshot} of the database as of its start time.
+  \item Write-write conflicts are detected at commit time (``first committer wins'').
+  \item SI prevents dirty reads, non-repeatable reads, and phantom reads, but allows \emph{write skew} anomalies.
+\end{itemize}
+
+\begin{deepdivebox}[Write Skew Anomaly]
+Two transactions $T_1$ and $T_2$ each read overlapping data and make disjoint writes based on what they read.  Both commit successfully, but the combined effect violates a constraint.
+
+\textbf{Example:} A hospital requires at least one doctor on call.  $T_1$ checks that Dr.\ A is on call and takes Dr.\ B off call.  $T_2$ checks that Dr.\ B is on call and takes Dr.\ A off call.  Result: no one is on call.
+
+To prevent write skew, use \code{Serializable} isolation (SSI in PostgreSQL uses predicate locking on top of MVCC).
+\end{deepdivebox}
+
+\section{MVCC in \shiftdb{} --- Design Path}
+
+\shiftdb{}'s current \code{Table::updateRows} uses a delete-and-reinsert strategy, which is the first step toward MVCC:
+\begin{enumerate}[nosep]
+  \item Mark old tuple as deleted (logical delete).
+  \item Insert new version.
+\end{enumerate}
+Extending this to full MVCC would require:
+\begin{itemize}[nosep]
+  \item Adding \code{txn\_id\_create} and \code{txn\_id\_delete} fields to each tuple.
+  \item A transaction manager that assigns monotonically increasing timestamps.
+  \item A visibility check in \code{scanAll()} that filters versions.
+  \item A garbage collector to reclaim invisible versions.
+\end{itemize}
+
+\begin{interviewbox}[Interview Corner]
+\textbf{Q:} What is MVCC and why is it used?\\[4pt]
+\textbf{A:} MVCC keeps multiple timestamped versions of each row so that readers see a consistent snapshot without acquiring locks.  This eliminates reader-writer contention, dramatically improving concurrency.  It is used by PostgreSQL, MySQL/InnoDB, Oracle, and SQL Server.
+
+\vspace{6pt}
+\textbf{Q:} How does PostgreSQL implement MVCC differently from Oracle?\\[4pt]
+\textbf{A:} PostgreSQL stores all versions in the main heap table and cleans up dead tuples with VACUUM.  Oracle keeps only the latest version in the table and stores old versions in undo segments (rollback segments), which avoids table bloat but limits how far back you can read (ORA-01555 ``snapshot too old'').
+
+\vspace{6pt}
+\textbf{Q:} What is snapshot isolation?  How does it differ from serializable?\\[4pt]
+\textbf{A:} SI gives each transaction a consistent snapshot at start time.  It prevents dirty, non-repeatable, and phantom reads but allows write skew.  Serializable prevents all anomalies, including write skew, by using predicate locks (SSI) or full serialization ordering.
+
+\vspace{6pt}
+\textbf{Q:} What is the write skew anomaly?  Give an example.\\[4pt]
+\textbf{A:} Write skew occurs when two transactions read overlapping data and make non-conflicting writes that together violate a constraint.  Example: two withdrawals each check the balance is sufficient and both succeed, overdrawing the account.
+\end{interviewbox}

@@ -1,0 +1,76 @@
+% ============================================================
+%  Shift_Elite DB --- Master Document
+% ============================================================
+\input{preamble}
+
+\begin{document}
+
+% ---------- Title Page ----------
+\begin{titlepage}
+  \centering
+  \vspace*{2cm}
+
+  \begin{tikzpicture}
+    \node[rounded corners=8pt, fill=shiftPrimary, text=white,
+          inner sep=12pt, font=\fontsize{36}{42}\selectfont\bfseries]
+      {Shift\_Elite DB};
+  \end{tikzpicture}
+
+  \vspace{1.5cm}
+  {\LARGE\bfseries Building a Database Management System\\from Scratch}
+
+  \vspace{0.8cm}
+  {\large\itshape A Deep-Learning \& Interview-Preparation Guide}
+
+  \vspace{2cm}
+  {\Large Pranav Kashyap}
+
+  \vfill
+
+  \begin{tikzpicture}
+    \node[component, minimum width=2.5cm] (fe) {React\\Frontend};
+    \node[component, minimum width=2.5cm, right=1.8cm of fe] (api) {REST\\API};
+    \node[component, minimum width=2.5cm, right=1.8cm of api] (eng) {SQL\\Engine};
+    \node[storage, right=1.8cm of eng] (store) {Storage};
+    \draw[arr] (fe) -- (api);
+    \draw[arr] (api) -- (eng);
+    \draw[arr] (eng) -- (store);
+  \end{tikzpicture}
+
+  \vspace{1cm}
+  {\large\today}
+\end{titlepage}
+
+% ---------- Front Matter ----------
+\pagenumbering{roman}
+\tableofcontents
+\listoffigures
+\listoftables
+
+\clearpage
+\pagenumbering{arabic}
+
+% ---------- Main Chapters ----------
+\input{01-introduction}
+\input{02-architecture}
+\input{03-storage-engine}
+\input{04-indexing}
+\input{05-sql-parser}
+\input{06-query-optimizer}
+\input{07-transaction-manager}
+\input{08-mvcc}
+\input{09-buffer-management}
+\input{10-wal-recovery}
+\input{11-web-interface}
+\input{12-performance}
+
+% ---------- Appendices ----------
+\appendix
+\input{appendix-a-algorithms}
+\input{appendix-b-interview-prep}
+
+% ---------- Bibliography ----------
+\bibliographystyle{plainnat}
+\bibliography{bibliography}
+
+\end{document}

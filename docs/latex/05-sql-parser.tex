@@ -1,0 +1,286 @@
+% ============================================================
+%  Chapter 5 --- SQL Parser
+% ============================================================
+\chapter{SQL Parser}
+\label{ch:sql-parser}
+
+\section{Overview of Parsing}
+
+Parsing transforms a flat SQL string into a structured \emph{Abstract Syntax Tree} (AST) that the executor can walk.  \shiftdb{} implements a three-stage pipeline inspired by the classic compiler architecture~\cite{aho2006compilers}:
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=0.8cm and 0.8cm]
+  \node[component, minimum width=2.6cm] (input) {SQL Text};
+  \node[component, minimum width=2.6cm, right=of input, fill=shiftAccent!10, draw=shiftAccent] (lex) {Lexer\\(Tokeniser)};
+  \node[component, minimum width=2.6cm, right=of lex] (tokens) {Token\\Stream};
+  \node[component, minimum width=2.6cm, right=of tokens, fill=shiftAccent!10, draw=shiftAccent] (parse) {Parser\\(RDP)};
+  \node[component, minimum width=2.6cm, right=of parse] (ast) {AST};
+
+  \draw[arr] (input) -- (lex);
+  \draw[arr] (lex) -- (tokens);
+  \draw[arr] (tokens) -- (parse);
+  \draw[arr] (parse) -- (ast);
+\end{tikzpicture}
+\caption{SQL parsing pipeline.}
+\label{fig:parser-pipeline}
+\end{figure}
+
+\section{Lexer (Tokeniser)}
+\label{sec:lexer}
+
+The tokeniser (\code{tokenizer.h}) scans the SQL string one character at a time and emits a \code{std::vector<Token>}.
+
+\subsection{Token Types}
+
+\shiftdb{} defines more than 80 distinct token types, grouped as:
+
+\begin{table}[H]
+\centering
+\caption{Token type categories.}
+\begin{tabular}{l p{9cm} l}
+\toprule
+\textbf{Category} & \textbf{Examples} & \textbf{Count} \\
+\midrule
+SQL Keywords       & \code{SELECT}, \code{FROM}, \code{JOIN}, \code{GROUP} & 60+ \\
+Type Keywords      & \code{INT\_TYPE}, \code{VARCHAR\_TYPE}, \code{FLOAT\_TYPE} & 6 \\
+Literals           & \code{INTEGER\_LITERAL}, \code{FLOAT\_LITERAL}, \code{STRING\_LITERAL} & 3 \\
+Identifiers        & \code{IDENTIFIER} & 1 \\
+Operators          & \code{EQUALS}, \code{NOT\_EQUALS}, \code{LESS\_THAN}, etc. & 11 \\
+Punctuation        & \code{LPAREN}, \code{RPAREN}, \code{COMMA}, \code{DOT}, \code{STAR} & 7 \\
+Special            & \code{END\_OF\_INPUT}, \code{UNKNOWN} & 2 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Lexer Algorithm}
+
+\begin{algorithm}[H]
+\caption{SQL Tokenisation}
+\label{alg:tokeniser}
+\KwInput{SQL string $s$}
+\KwOutput{Token list $T$}
+$\text{pos} \leftarrow 0$\;
+\While{$\text{pos} < |s|$}{
+  Skip whitespace and \code{--} comments\;
+  $c \leftarrow s[\text{pos}]$\;
+  \uIf{$c$ is quote (\code{'} or \code{"})}{
+    Read string literal (handle escape sequences)\;
+  }
+  \uElseIf{$c$ is digit (or \code{-} followed by digit)}{
+    Read number (detect float by \code{.} presence)\;
+  }
+  \uElseIf{$c$ is operator character}{
+    Emit single- or double-char operator token\;
+  }
+  \uElseIf{$c$ is letter or \code{\_}}{
+    Read identifier; check against keyword map\;
+    \If{keyword found}{Convert to keyword token type\;}
+  }
+  \Else{Emit \code{UNKNOWN} token\;}
+}
+Append \code{END\_OF\_INPUT}\;
+\Return{$T$}\;
+\end{algorithm}
+
+\subsection{Keyword Recognition}
+
+Keywords are recognised by looking up the identifier (converted to uppercase) in a \code{static const std::map<string, TokenType>} containing all SQL keywords.  This gives $\bigO{\log k}$ lookup per identifier, where $k$ is the number of keywords.
+
+\begin{lstlisting}[style=cpp, caption={Keyword lookup (excerpt).}]
+static TokenType getKeywordType(const std::string& word) {
+    static const std::map<std::string, TokenType> keywords = {
+        {"SELECT", TokenType::SELECT},
+        {"FROM",   TokenType::FROM},
+        {"WHERE",  TokenType::WHERE},
+        // ... 60+ entries
+    };
+    auto it = keywords.find(word);
+    return (it != keywords.end()) ? it->second : TokenType::UNKNOWN;
+}
+\end{lstlisting}
+
+\section{Recursive-Descent Parser}
+\label{sec:parser}
+
+The parser (\code{parser.h}) is a \emph{hand-written recursive-descent parser} (RDP).  Each SQL clause maps to a parse method:
+
+\begin{table}[H]
+\centering
+\caption{Parser methods and their responsibilities.}
+\begin{tabular}{l l p{8cm}}
+\toprule
+\textbf{Method} & \textbf{Statement} & \textbf{Parses} \\
+\midrule
+\code{parseSelect}      & SELECT   & columns, FROM, JOINs, WHERE, GROUP BY, HAVING, ORDER BY, LIMIT \\
+\code{parseInsert}      & INSERT   & INTO table, optional column list, VALUES rows \\
+\code{parseUpdate}      & UPDATE   & SET assignments, WHERE \\
+\code{parseDelete}      & DELETE   & FROM, WHERE \\
+\code{parseCreateTable} & CREATE TABLE & column definitions, constraints, PRIMARY KEY \\
+\code{parseDrop}        & DROP TABLE   & IF EXISTS, table name \\
+\code{parseCreateIndex} & CREATE INDEX & UNIQUE, ON, columns \\
+\code{parseShow}        & SHOW TABLES  & -- \\
+\code{parseDescribe}    & DESCRIBE     & table name \\
+\code{parseExplain}     & EXPLAIN      & nested SELECT \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Expression Parsing}
+\label{sec:expr-parsing}
+
+Expressions are parsed using \emph{precedence climbing}, where each precedence level has its own method:
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=0.6cm, every node/.style={component, minimum width=4cm}]
+  \node (or) {parseOr (\code{OR})};
+  \node[below=of or] (and) {parseAnd (\code{AND})};
+  \node[below=of and] (cmp) {parseComparison (\code{=, <, >, IN, LIKE, ...})};
+  \node[below=of cmp] (add) {parseAddition (\code{+, -})};
+  \node[below=of add] (mul) {parseMultiplication (\code{*, /, \%})};
+  \node[below=of mul] (una) {parseUnary (\code{NOT, -})};
+  \node[below=of una] (pri) {parsePrimary (literals, column refs, aggregates)};
+
+  \draw[arr] (or) -- (and);
+  \draw[arr] (and) -- (cmp);
+  \draw[arr] (cmp) -- (add);
+  \draw[arr] (add) -- (mul);
+  \draw[arr] (mul) -- (una);
+  \draw[arr] (una) -- (pri);
+\end{tikzpicture}
+\caption{Expression parsing call chain (highest to lowest precedence, top to bottom).}
+\label{fig:precedence}
+\end{figure}
+
+\section{Abstract Syntax Tree (AST)}
+\label{sec:ast}
+
+The AST is defined in \code{ast.h}.  The top-level \code{Statement} struct uses tagged-union-style dispatch with \code{shared\_ptr}s:
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  every node/.style={rectangle, draw=shiftPrimary, fill=shiftPrimary!5,
+    rounded corners=2pt, font=\footnotesize, minimum height=0.6cm, align=center},
+  level distance=1.6cm,
+  level 1/.style={sibling distance=3.2cm},
+  level 2/.style={sibling distance=2.4cm},
+]
+\node {Statement}
+  child { node {SelectStmt} }
+  child { node {InsertStmt} }
+  child { node {UpdateStmt} }
+  child { node {DeleteStmt} }
+  child { node {CreateTableStmt} }
+  child { node {DropTableStmt} };
+\end{tikzpicture}
+\caption{Statement AST node hierarchy (simplified).}
+\label{fig:ast-hierarchy}
+\end{figure}
+
+\subsection{Expression Nodes}
+
+The \code{Expression} struct is a polymorphic node that can represent:
+
+\begin{table}[H]
+\centering
+\caption{Expression types.}
+\begin{tabular}{l l}
+\toprule
+\textbf{ExprType} & \textbf{Meaning} \\
+\midrule
+\code{LITERAL}      & Constant value (int, float, string, bool, null) \\
+\code{COLUMN\_REF}  & Column reference, optionally table-qualified \\
+\code{BINARY\_OP}   & Two-operand operation (\code{+}, \code{AND}, \code{=}, etc.) \\
+\code{UNARY\_OP}    & Single-operand (\code{NOT}) \\
+\code{AGGREGATE}    & \code{COUNT}, \code{SUM}, \code{AVG}, \code{MIN}, \code{MAX} \\
+\code{IN\_LIST}     & \code{col IN (v1, v2, ...)} \\
+\code{BETWEEN\_EXPR}& \code{col BETWEEN low AND high} \\
+\code{LIKE\_EXPR}   & \code{col LIKE pattern} \\
+\code{IS\_NULL}     & \code{col IS [NOT] NULL} \\
+\code{STAR}         & \code{*} wildcard \\
+\code{ALIAS}        & \code{expr AS name} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Example AST}
+
+For the query \code{SELECT name, city FROM customers WHERE age > 25 ORDER BY name}:
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  every node/.style={rectangle, draw=shiftPrimary, fill=shiftPrimary!5,
+    rounded corners=2pt, font=\scriptsize, minimum height=0.5cm, align=center},
+  level distance=1.4cm,
+  level 1/.style={sibling distance=4cm},
+  level 2/.style={sibling distance=2.5cm},
+  level 3/.style={sibling distance=2cm},
+]
+\node {SelectStatement}
+  child { node {columns}
+    child { node {COL\_REF\\``name''} }
+    child { node {COL\_REF\\``city''} }
+  }
+  child { node {from\\``customers''} }
+  child { node {where: BinaryOp(GT)}
+    child { node {COL\_REF\\``age''} }
+    child { node {LITERAL\\25} }
+  }
+  child { node {orderBy\\``name'' ASC} };
+\end{tikzpicture}
+\caption{AST for a sample SELECT query.}
+\label{fig:ast-example}
+\end{figure}
+
+\section{Parser Helper Methods}
+
+\begin{lstlisting}[style=cpp, caption={Core parser helper methods.}]
+bool check(TokenType type) const {
+    return currentToken().type == type;
+}
+
+bool match(TokenType type) {
+    if (check(type)) { advance(); return true; }
+    return false;
+}
+
+Token consume(TokenType type, const std::string& errMsg) {
+    if (check(type)) {
+        Token t = currentToken();
+        advance();
+        return t;
+    }
+    throw std::runtime_error(errMsg + " (got: "
+          + currentToken().value + ")");
+}
+\end{lstlisting}
+
+These three methods (\code{check}, \code{match}, \code{consume}) form the backbone of every recursive-descent parser.  \code{check} peeks without consuming; \code{match} consumes if the type matches; \code{consume} is a mandatory match that throws on failure.
+
+\section{Design Decisions}
+
+\begin{deepdivebox}[Why Hand-Written Instead of YACC/Bison/ANTLR?]
+\begin{enumerate}[nosep]
+  \item \textbf{Zero dependencies} --- no parser generator tool chain required.
+  \item \textbf{Better error messages} --- each \code{consume} can throw a context-specific error.
+  \item \textbf{Easier debugging} --- you can step through the parser in a debugger.
+  \item \textbf{Good enough performance} --- SQL queries are short; the parser is not the bottleneck.
+  \item \textbf{Learning value} --- writing a parser from scratch teaches language theory deeply.
+\end{enumerate}
+\end{deepdivebox}
+
+\begin{interviewbox}[Interview Corner]
+\textbf{Q:} What is a recursive-descent parser?  What are its limitations?\\[4pt]
+\textbf{A:} An RDP has one function per grammar non-terminal.  Each function tries to match the current tokens against the production rules.  \emph{Limitation:} it cannot handle left-recursive grammars directly (e.g.\ \code{E $\to$ E + T}).  \shiftdb{} avoids this by using precedence climbing for expressions.
+
+\vspace{6pt}
+\textbf{Q:} How does operator precedence work in \shiftdb{}'s parser?\\[4pt]
+\textbf{A:} Each precedence level has its own parse function: \code{parseOr} $\to$ \code{parseAnd} $\to$ \code{parseComparison} $\to$ \code{parseAddition} $\to$ \code{parseMultiplication} $\to$ \code{parseUnary} $\to$ \code{parsePrimary}.  Higher-precedence functions call lower-precedence ones, naturally building the AST with correct grouping.
+
+\vspace{6pt}
+\textbf{Q:} What is the time complexity of tokenisation and parsing?\\[4pt]
+\textbf{A:} Both are $\bigO{n}$ where $n$ is the length of the SQL string.  The tokeniser makes one pass; the parser makes one pass over the token list (no backtracking in this grammar).
+\end{interviewbox}

@@ -1,0 +1,206 @@
+% ============================================================
+%  Chapter 2 --- System Architecture
+% ============================================================
+\chapter{System Architecture}
+\label{ch:architecture}
+
+\section{High-Level Overview}
+
+\shiftdb{} is organized into clearly separated layers, following the classical DBMS architecture described by Hellerstein et al.~\cite{hellerstein2007architecture}.  Each layer communicates with its neighbours through narrow, well-defined interfaces.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=1.4cm and 2cm]
+  % Frontend
+  \node[component, minimum width=10cm, fill=shiftPrimary!12] (fe)
+    {React Frontend (Monaco Editor, Data Grid, ER Diagram, Query Builder)};
+
+  % REST API
+  \node[component, minimum width=10cm, below=of fe] (api)
+    {HTTP Server / REST API Layer (\texttt{server.h})};
+
+  % SQL Engine
+  \node[component, minimum width=4.5cm, below left=1.4cm and 0.3cm of api] (parser)
+    {SQL Parser\\(\texttt{tokenizer.h}, \texttt{parser.h})};
+  \node[component, minimum width=4.5cm, below right=1.4cm and 0.3cm of api] (exec)
+    {Query Executor\\(\texttt{executor.h})};
+
+  % Catalog
+  \node[component, minimum width=10cm, below=3.6cm of api] (catalog)
+    {Catalog Manager (\texttt{catalog.h})};
+
+  % Storage
+  \node[component, minimum width=4.5cm, below left=1.4cm and 0.3cm of catalog] (bp)
+    {Buffer Pool\\(\texttt{buffer\_pool.h})};
+  \node[component, minimum width=4.5cm, below right=1.4cm and 0.3cm of catalog] (table)
+    {Table Manager\\(\texttt{table.h})};
+
+  % Disk
+  \node[storage, below=3.6cm of catalog, minimum width=6cm] (disk)
+    {Disk Manager (\texttt{disk\_manager.h})\\[2pt]\texttt{.nxdb} files + \texttt{catalog.json}};
+
+  % Arrows
+  \draw[arr] (fe) -- (api);
+  \draw[arr] (api) -- (parser);
+  \draw[arr] (api) -- (exec);
+  \draw[arr] (parser) -- (catalog);
+  \draw[arr] (exec) -- (catalog);
+  \draw[arr] (catalog) -- (bp);
+  \draw[arr] (catalog) -- (table);
+  \draw[arr] (bp) -- (disk);
+  \draw[arr] (table) -- (disk);
+  \draw[dasharr] (exec) -- (table);
+\end{tikzpicture}
+\caption{Layered architecture of \shiftdb{}.}
+\label{fig:arch-layers}
+\end{figure}
+
+\section{Layer-by-Layer Walkthrough}
+
+\subsection{Presentation Layer --- React Frontend}
+
+The browser-based client communicates exclusively via HTTP/JSON with the backend REST API.  Key UI components:
+
+\begin{table}[H]
+\centering
+\caption{Frontend component mapping.}
+\label{tab:fe-components}
+\begin{tabular}{l l p{8cm}}
+\toprule
+\textbf{Component} & \textbf{File} & \textbf{Responsibility} \\
+\midrule
+SQL Editor       & \code{SqlEditor.tsx}            & Monaco-based editor with IntelliSense \\
+Data Grid        & \code{DataGrid.tsx}             & Sortable, paginated result display \\
+Schema Explorer  & \code{SchemaExplorer.tsx}        & Tree view of tables, columns, indexes \\
+ER Diagram       & \code{ERDiagram.tsx}             & ReactFlow entity-relationship graph \\
+Query Builder    & \code{VisualQueryBuilder.tsx}    & GUI-driven SQL construction \\
+Plan Visualiser  & \code{QueryPlanVisualizer.tsx}   & Tree view of EXPLAIN output \\
+Monitoring       & \code{Monitoring.tsx}            & Buffer pool \& query metrics charts \\
+Query History    & \code{QueryHistory.tsx}          & Searchable past-query list \\
+Command Palette  & \code{CommandPalette.tsx}        & \texttt{Ctrl+K} fuzzy action launcher \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Network Layer --- HTTP Server}
+
+The C++ backend runs a \emph{zero-dependency} HTTP server built on raw BSD sockets (\code{server.h}).  It supports:
+\begin{itemize}[nosep]
+  \item Multithreaded request handling (one \code{std::thread} per connection).
+  \item CORS headers for cross-origin browser requests.
+  \item Routing to nine REST endpoints (see \cref{ch:web-interface}).
+\end{itemize}
+
+\subsection{Query Processing Layer}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=0.6cm and 1.2cm]
+  \node[component, minimum width=2.2cm] (sql) {SQL String};
+  \node[component, minimum width=2.2cm, right=of sql] (lex) {Tokeniser};
+  \node[component, minimum width=2.2cm, right=of lex] (tok) {Tokens};
+  \node[component, minimum width=2.2cm, right=of tok] (par) {Parser};
+  \node[component, minimum width=2.2cm, right=of par] (ast) {AST};
+  \node[component, minimum width=2.2cm, right=of ast] (exe) {Executor};
+
+  \draw[arr] (sql) -- (lex);
+  \draw[arr] (lex) -- (tok);
+  \draw[arr] (tok) -- (par);
+  \draw[arr] (par) -- (ast);
+  \draw[arr] (ast) -- (exe);
+\end{tikzpicture}
+\caption{Query processing pipeline.}
+\label{fig:query-pipeline}
+\end{figure}
+
+\begin{enumerate}[nosep]
+  \item \textbf{Tokeniser} (\code{tokenizer.h}) --- scans the SQL string character-by-character, emitting a stream of typed tokens (keywords, identifiers, literals, operators).
+  \item \textbf{Parser} (\code{parser.h}) --- a hand-written recursive-descent parser that consumes tokens and builds an Abstract Syntax Tree (AST).
+  \item \textbf{Executor} (\code{executor.h}) --- walks the AST object and calls into the catalog and storage layers to produce a \code{QueryResult}.
+\end{enumerate}
+
+\subsection{Catalog Layer}
+
+The \code{Catalog} class (\code{catalog.h}) is the system's metadata repository.  It:
+\begin{itemize}[nosep]
+  \item Stores \code{TableSchema} objects (column names, types, constraints).
+  \item Manages \code{IndexMeta} records.
+  \item Persists everything to \code{catalog.json} using the \code{nlohmann/json} library.
+  \item Loads the catalog on startup and saves after each DDL operation.
+\end{itemize}
+
+\subsection{Storage Layer}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=1cm and 1.5cm]
+  \node[component] (tbl) {Table};
+  \node[component, below left=of tbl] (bp) {Buffer Pool};
+  \node[component, below right=of tbl] (dm) {Disk Manager};
+  \node[page, below=of bp] (pg) {Page\\(4 KB)};
+  \node[storage, below=of dm] (file) {.nxdb file};
+
+  \draw[arr] (tbl) -- (bp);
+  \draw[arr] (tbl) -- (dm);
+  \draw[arr] (bp) -- (pg);
+  \draw[arr] (dm) -- (file);
+  \draw[dasharr] (bp) -- (dm) node[midway, above, font=\scriptsize] {evict/fetch};
+\end{tikzpicture}
+\caption{Storage layer components.}
+\label{fig:storage-layer}
+\end{figure}
+
+\begin{itemize}[nosep]
+  \item \textbf{Page} (\code{page.h}) --- the 4\,KB unit of I/O; uses a slotted-page layout.
+  \item \textbf{Disk Manager} (\code{disk\_manager.h}) --- reads/writes pages from \code{.nxdb} files.
+  \item \textbf{Buffer Pool} (\code{buffer\_pool.h}) --- an LRU cache that keeps frequently-used pages in memory.
+  \item \textbf{Table} (\code{table.h}) --- serialises/deserialises rows and orchestrates page-level operations.
+\end{itemize}
+
+\section{Data Flow Example}
+
+\begin{deepdivebox}[Tracing \texttt{SELECT * FROM customers WHERE city = 'NYC'}]
+\begin{enumerate}[nosep]
+  \item The frontend sends \code{\{"sql": "SELECT ..."\}} via \code{POST /api/query}.
+  \item \code{HttpServer::handleQuery} extracts the SQL string and calls \code{Executor::execute}.
+  \item The \textbf{Tokeniser} produces tokens: \code{SELECT}, \code{STAR}, \code{FROM}, \code{IDENTIFIER(customers)}, \code{WHERE}, \code{IDENTIFIER(city)}, \code{EQUALS}, \code{STRING\_LITERAL('NYC')}.
+  \item The \textbf{Parser} builds a \code{SelectStatement} AST with a \code{BinaryOp(EQ)} WHERE clause.
+  \item The \textbf{Executor} looks up ''customers'' in the Catalog, gets the \code{Table} object.
+  \item \code{Table::scanAll()} iterates over pages via the Buffer Pool.
+  \item For each page, the Buffer Pool checks its LRU cache; on a miss, it calls \code{DiskManager::readPage} to load from the \code{.nxdb} file.
+  \item  Each tuple is deserialized and tested against the WHERE predicate.
+  \item Matching rows are collected into a \code{QueryResult} and serialised to JSON.
+  \item The HTTP server sends the JSON response back to the React frontend.
+\end{enumerate}
+\end{deepdivebox}
+
+\section{Namespace and Code Organisation}
+
+All C++ code lives in the \code{shift\_elite} namespace.  The directory structure mirrors the architectural layers:
+
+\begin{lstlisting}[style=pseudo, numbers=none]
+backend/src/
+  types/types.h          -- Value, DataType, TableSchema, constants
+  storage/
+    page.h               -- Page class (4 KB slotted page)
+    disk_manager.h       -- File I/O for .nxdb files
+    buffer_pool.h        -- LRU buffer pool
+    table.h              -- Row serialisation, insert/scan/delete
+  catalog/catalog.h      -- Schema and index metadata
+  sql/
+    tokenizer.h          -- SQL lexer
+    ast.h                -- AST node hierarchy
+    parser.h             -- Recursive-descent parser
+    executor.h           -- Statement execution engine
+  server/server.h        -- HTTP server + REST API routing
+  main.cpp               -- Entry point, sample data seeding
+\end{lstlisting}
+
+\begin{interviewbox}[Interview Corner]
+\textbf{Q:} Describe the architecture of a typical relational DBMS.  Which layers does \shiftdb{} implement?\\[4pt]
+\textbf{A:} A textbook DBMS has a \emph{query processor} (parser + optimiser + executor), a \emph{storage engine} (buffer pool + disk manager), a \emph{catalog}, and a \emph{transaction manager}.  \shiftdb{} implements all of these except a full-blown optimiser (it uses a simple cost model in \code{EXPLAIN}).  It adds a presentation layer (React UI) and a network layer (HTTP server) on top.
+
+\vspace{6pt}
+\textbf{Q:} Why is separation of layers important in database design?\\[4pt]
+\textbf{A:} Layer separation provides (1) \emph{modularity} --- each component can evolve independently; (2) \emph{testability} --- layers can be unit-tested in isolation; (3) \emph{portability} --- the storage layer can be swapped (e.g., from file system to cloud storage) without touching the parser.
+\end{interviewbox}

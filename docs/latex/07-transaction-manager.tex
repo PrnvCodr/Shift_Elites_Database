@@ -1,0 +1,210 @@
+% ============================================================
+%  Chapter 7 --- Transaction Manager
+% ============================================================
+\chapter{Transaction Manager}
+\label{ch:transactions}
+
+\section{What Is a Transaction?}
+
+A \emph{transaction} is a sequence of database operations that is treated as a single logical unit of work.  The canonical example is a bank transfer: debit account A and credit account B must \emph{both succeed or both fail}.
+
+\begin{conceptbox}[ACID Properties~\cite{gray1976granularity}]
+\begin{description}[nosep,leftmargin=1.5cm]
+  \item[Atomicity] All operations in a transaction complete, or none do.
+  \item[Consistency] A transaction moves the database from one valid state to another.
+  \item[Isolation] Concurrent transactions do not interfere with each other.
+  \item[Durability] Once committed, changes survive crashes and power failures.
+\end{description}
+\end{conceptbox}
+
+\section{Transaction Support in \shiftdb{}}
+
+\shiftdb{} recognises the transaction control statements \code{BEGIN}, \code{COMMIT}, and \code{ROLLBACK}:
+
+\begin{lstlisting}[language=SQL, caption={Transaction syntax.}]
+BEGIN;
+INSERT INTO accounts (name, balance) VALUES ('Alice', 1000);
+UPDATE accounts SET balance = balance - 100 WHERE name = 'Alice';
+COMMIT;
+\end{lstlisting}
+
+Currently, these are parsed and acknowledged but do not enforce full ACID semantics.  The sections below cover the theory you should know for interviews and the design that a production extension would follow.
+
+\section{Atomicity and the Undo Log}
+
+Atomicity is typically enforced via an \emph{undo log}.  Before modifying any page, the old value is written to the log.  On \code{ROLLBACK}, the log is replayed in reverse to restore original values.
+
+\begin{algorithm}[H]
+\caption{Undo-based Atomicity}
+\label{alg:undo}
+\KwInput{Transaction $T$ performing write $W(x, v_{new})$}
+Write undo record: $\langle T, x, v_{old} \rangle$ to undo log\;
+Modify $x \leftarrow v_{new}$ in buffer pool\;
+\If{ROLLBACK requested}{
+  \ForEach{record $\langle T, x, v \rangle$ in reverse order}{
+    Restore $x \leftarrow v$\;
+  }
+}
+\end{algorithm}
+
+\section{Isolation Levels}
+\label{sec:isolation-levels}
+
+The SQL standard defines four isolation levels, each permitting or preventing certain anomalies:
+
+\begin{table}[H]
+\centering
+\caption{Isolation levels and permitted anomalies.}
+\label{tab:isolation}
+\begin{tabular}{l c c c c}
+\toprule
+\textbf{Isolation Level} & \textbf{Dirty Read} & \textbf{Non-Repeatable} & \textbf{Phantom} & \textbf{Serialisation} \\
+\midrule
+Read Uncommitted   & \cmark & \cmark & \cmark & \xmark \\
+Read Committed     & \xmark & \cmark & \cmark & \xmark \\
+Repeatable Read    & \xmark & \xmark & \cmark & \xmark \\
+Serializable       & \xmark & \xmark & \xmark & \cmark \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{deepdivebox}[Understanding the Anomalies]
+\begin{description}[nosep]
+  \item[Dirty Read] Transaction A reads data written by uncommitted transaction B.  If B rolls back, A has read invalid data.
+  \item[Non-repeatable Read] A reads the same row twice and gets different values because B modified and committed between the two reads.
+  \item[Phantom Read] A runs a range query twice; the second execution sees new rows inserted by B.
+\end{description}
+\end{deepdivebox}
+
+\section{Concurrency Control Mechanisms}
+\label{sec:concurrency-control}
+
+\subsection{Two-Phase Locking (2PL)}
+
+2PL is the classical correctness criterion~\cite{bernstein1981concurrency}: a transaction must acquire all its locks before releasing any.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+  \draw[-Stealth] (0,0) -- (10,0) node[right] {Time};
+  \draw[-Stealth] (0,0) -- (0,4) node[above] {Locks Held};
+
+  % Growing phase
+  \draw[thick, shiftPrimary] (0.5,0.5) -- (2,1.5) -- (3.5,2.5) -- (5,3.5);
+  \node[font=\scriptsize, shiftPrimary, above] at (2.5,2.5) {Growing Phase};
+
+  % Lock point
+  \fill[shiftWarn] (5,3.5) circle (3pt);
+  \node[font=\scriptsize, above] at (5,3.7) {Lock Point};
+
+  % Shrinking phase
+  \draw[thick, shiftWarn] (5,3.5) -- (6.5,2.5) -- (8,1.5) -- (9.5,0.5);
+  \node[font=\scriptsize, shiftWarn, above] at (7.5,2.3) {Shrinking Phase};
+\end{tikzpicture}
+\caption{Two-phase locking: locks only increase until the lock point, then only decrease.}
+\label{fig:2pl}
+\end{figure}
+
+\textbf{Strict 2PL}: holds all locks until commit/abort --- prevents cascading aborts.
+
+\subsection{Lock Types}
+
+\begin{table}[H]
+\centering
+\caption{Lock compatibility matrix.}
+\begin{tabular}{l c c}
+\toprule
+ & \textbf{Shared (S)} & \textbf{Exclusive (X)} \\
+\midrule
+\textbf{Shared (S)}    & \cmark & \xmark \\
+\textbf{Exclusive (X)} & \xmark & \xmark \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{itemize}[nosep]
+  \item \textbf{Shared (S) lock} --- acquired for reads; multiple readers can hold S locks concurrently.
+  \item \textbf{Exclusive (X) lock} --- acquired for writes; no other lock (S or X) is compatible.
+\end{itemize}
+
+\subsection{Lock Granularity}
+\label{sec:lock-granularity}
+
+\begin{table}[H]
+\centering
+\caption{Lock granularity trade-offs.}
+\begin{tabular}{l c c p{6cm}}
+\toprule
+\textbf{Granularity} & \textbf{Concurrency} & \textbf{Overhead} & \textbf{Used By} \\
+\midrule
+Table-level   & Low  & Low  & SQLite (exclusive write lock) \\
+Page-level    & Med  & Med  & DB2, some PostgreSQL ops \\
+Row-level     & High & High & MySQL/InnoDB, PostgreSQL \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Deadlock Detection}
+\label{sec:deadlock}
+
+Deadlocks occur when two or more transactions form a circular wait.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+  \node[component, minimum width=2cm] (t1) {$T_1$};
+  \node[component, minimum width=2cm, right=4cm of t1] (t2) {$T_2$};
+
+  \draw[arr, bend left=25] (t1) to node[above, font=\scriptsize] {waits for lock held by} (t2);
+  \draw[arr, bend left=25] (t2) to node[below, font=\scriptsize] {waits for lock held by} (t1);
+\end{tikzpicture}
+\caption{Deadlock: $T_1$ and $T_2$ wait for each other.}
+\label{fig:deadlock}
+\end{figure}
+
+\subsection{Detection Strategies}
+
+\begin{enumerate}[nosep]
+  \item \textbf{Wait-for graph}: maintain a directed graph of ``who waits for whom''.  Periodically check for cycles.
+  \item \textbf{Timeout}: if a transaction waits longer than a threshold, assume deadlock and abort.
+  \item \textbf{Prevention}: wound-wait or wait-die schemes assign timestamps; older transactions have priority.
+\end{enumerate}
+
+\begin{algorithm}[H]
+\caption{Deadlock Detection via Wait-For Graph}
+\label{alg:deadlock}
+\KwInput{Set of active transactions $\mathcal{T}$, lock table $\mathcal{L}$}
+Build directed graph $G$: edge $T_i \to T_j$ if $T_i$ waits for a lock held by $T_j$\;
+\If{$G$ contains a cycle}{
+  Choose victim $T_v$ (youngest transaction)\;
+  Abort $T_v$, release its locks\;
+}
+\end{algorithm}
+
+\section{Optimistic Concurrency Control (OCC)}
+
+OCC assumes conflicts are rare and validates at commit time:
+\begin{enumerate}[nosep]
+  \item \textbf{Read phase}: transaction reads and writes to a private workspace.
+  \item \textbf{Validation phase}: check that no concurrent transaction has modified the same data.
+  \item \textbf{Write phase}: if valid, apply changes to the database.
+\end{enumerate}
+
+Used by: Google Spanner, CockroachDB, and many web frameworks (``optimistic locking'' via version columns).
+
+\begin{interviewbox}[Interview Corner]
+\textbf{Q:} Explain the ACID properties with a real-world analogy.\\[4pt]
+\textbf{A:} \emph{Atomicity} = a bank transfer is all-or-nothing.  \emph{Consistency} = account balances always sum to the same total.  \emph{Isolation} = two tellers serving different customers do not interfere.  \emph{Durability} = once the receipt is printed, the transfer survives a power cut.
+
+\vspace{6pt}
+\textbf{Q:} What is the difference between Strict 2PL and basic 2PL?\\[4pt]
+\textbf{A:} Basic 2PL releases locks in the shrinking phase, which can cause cascading aborts if another transaction reads data that a rolled-back transaction wrote.  Strict 2PL holds all locks until commit/abort, preventing this.
+
+\vspace{6pt}
+\textbf{Q:} How would you detect and resolve a deadlock?\\[4pt]
+\textbf{A:} Build a wait-for graph and detect cycles periodically.  When a cycle is found, abort the youngest (or cheapest) transaction.  Alternative: use timeouts or a prevention scheme like wound-wait.
+
+\vspace{6pt}
+\textbf{Q:} Compare pessimistic (2PL) vs optimistic concurrency control.\\[4pt]
+\textbf{A:} 2PL acquires locks eagerly (pessimistic), which avoids conflicts but reduces concurrency.  OCC assumes no conflict, works in a private buffer, and validates at commit.  OCC is better for read-heavy workloads; 2PL is safer for write-heavy workloads.
+\end{interviewbox}

@@ -238,7 +238,7 @@ export function SqlEditor() {
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '4px', color: 'var(--text-muted)' }}>
                 <Clock size={12} />
-                {activeTab.result.executionTimeMs.toFixed(2)}ms
+                {(activeTab.result.executionTimeMs ?? 0).toFixed(2)}ms
               </div>
               <span style={{ color: 'var(--text-secondary)' }}>
                 {activeTab.result.rowsAffected} row{activeTab.result.rowsAffected !== 1 ? 's' : ''}
