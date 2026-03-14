@@ -445,7 +445,7 @@ private:
         
         if (stmt.groupBy.empty()) {
             // No GROUP BY but has aggregates — all rows are one group
-            groups["__all__"] = rows;
+            groups[{"__all__"}] = rows;
         } else {
             for (auto& row : rows) {
                 auto ctx = makeContext(row);
