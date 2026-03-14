@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: shift-elite-db
+    runtime: docker
+    rootDir: backend
+    dockerfilePath: Dockerfile
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: PORT
+        value: 10000
